@@ -360,7 +360,7 @@ def slot_dialog(d_idx: int, hour: int):
         with st.form("book_form", clear_on_submit=False):
             company = st.text_input(
                 "Company name",
-                placeholder="e.g. Acme Corp",
+                placeholder="e.g. Quill Mena",
                 key=f"company_{d_idx}_{hour}",
             )
             full_name = st.text_input(
