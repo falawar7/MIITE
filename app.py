@@ -19,23 +19,23 @@ from openpyxl.styles import Alignment, PatternFill
 # ---- Configuration ----
 EXCEL_FILE = "schedule.xlsx"
 SHEET_NAME = "Schedule"
-DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+DAYS = ["MON", "TUE", "WED", "THU"]
 WEEK_START = datetime(2026, 5, 4)
 HOURS = list(range(10, 18))
-DATES = [(WEEK_START + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+DATES = [(WEEK_START + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(len(DAYS))]
 # Friendly format used in the UI only (e.g. 'May 4')
 # Note: '%-d' isn't portable to Windows, so we build it manually
 DATES_DISPLAY = [
     (WEEK_START + timedelta(days=i)).strftime("%b ")
     + str((WEEK_START + timedelta(days=i)).day)
-    for i in range(7)
+    for i in range(len(DAYS))
 ]
 
 # ---- Branding ----
 LOGO_LEFT = "logo_left.png"
 LOGO_RIGHT = "logo_right.png"
-HEADER_TITLE = "MIITE Off the Record "
-HEADER_SUBTITLE = "App Developed By Faisal Elawar"
+HEADER_TITLE = "MIITE Off the Record"
+HEADER_SUBTITLE = "Week of May 4–7, 2026 · 1-hour slots, 10:00–17:00"
 
 
 # ---- Excel data layer (unchanged from before) ----
@@ -63,6 +63,9 @@ def init_excel(path: str = EXCEL_FILE) -> None:
 
 
 def load_bookings(path: str = EXCEL_FILE) -> dict:
+    """Returns {(d_idx, hour): {"company": ..., "name": ..., "phone": ...}}.
+    Cells store: 'Yes — Company | Full Name | Phone'  (extra fields optional)
+    """
     init_excel(path)
     wb = load_workbook(path)
     ws = wb[SHEET_NAME]
@@ -75,12 +78,22 @@ def load_bookings(path: str = EXCEL_FILE) -> dict:
                 continue
             txt = str(cell).strip()
             if txt.lower().startswith("yes"):
-                company = txt.split("—", 1)[-1].strip() if "—" in txt else ""
-                bookings[(d_idx, h)] = company or "(unnamed)"
+                # Strip the 'Yes — ' prefix
+                payload = txt.split("—", 1)[-1].strip() if "—" in txt else ""
+                # Split on '|' to separate company / name / phone
+                parts = [p.strip() for p in payload.split("|")]
+                company = parts[0] if len(parts) > 0 and parts[0] else "(unnamed)"
+                name = parts[1] if len(parts) > 1 else ""
+                phone = parts[2] if len(parts) > 2 else ""
+                bookings[(d_idx, h)] = {
+                    "company": company, "name": name, "phone": phone
+                }
     return bookings
 
 
-def save_booking(d_idx: int, hour: int, company, path: str = EXCEL_FILE) -> None:
+def save_booking(d_idx: int, hour: int, company, name: str = "", phone: str = "",
+                 path: str = EXCEL_FILE) -> None:
+    """Write a booking. company=None means cancel/free the slot."""
     init_excel(path)
     wb = load_workbook(path)
     ws = wb[SHEET_NAME]
@@ -88,7 +101,15 @@ def save_booking(d_idx: int, hour: int, company, path: str = EXCEL_FILE) -> None
     excel_row = 11 + h_idx * 2
     cell = ws.cell(row=excel_row, column=4 + d_idx)
     if company:
-        cell.value = f"Yes — {company}"
+        # Build payload: 'Yes — Company | Name | Phone'
+        # Each '|' segment is included only if it has content; trailing
+        # empty segments are dropped so the cell stays tidy when minimal data.
+        bits = [company.strip()]
+        if name.strip() or phone.strip():
+            bits.append(name.strip())
+        if phone.strip():
+            bits.append(phone.strip())
+        cell.value = "Yes — " + " | ".join(bits)
         cell.fill = PatternFill("solid", start_color="FAECE7")
     else:
         cell.value = "No"
@@ -99,7 +120,7 @@ def save_booking(d_idx: int, hour: int, company, path: str = EXCEL_FILE) -> None
 
 # ---- Page setup ----
 st.set_page_config(
-    page_title="MIITE Off the Record · Booking App",
+    page_title="MIITE Off the Record · Booking",
     page_icon="📅",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -302,25 +323,55 @@ def slot_dialog(d_idx: int, hour: int):
     st.markdown(label)
 
     if booking:
-        # Booked → show details + cancel option
-        st.info(f"Currently booked by **{booking}**")
+        # Booked → show full details + cancel option
+        st.markdown(
+            f"""
+            <div style="background:#eff6ff; border:1px solid #bfdbfe;
+                        padding:12px 14px; border-radius:8px; margin:8px 0 14px;">
+              <div style="font-size:11px; color:#666; text-transform:uppercase;
+                          letter-spacing:0.5px; margin-bottom:4px;">Company</div>
+              <div style="font-weight:600; font-size:15px; color:#1e3a8a; margin-bottom:10px;">
+                {booking['company']}</div>
+              {f'''<div style="font-size:11px; color:#666; text-transform:uppercase;
+                              letter-spacing:0.5px; margin-bottom:4px;">Full name</div>
+                   <div style="font-size:14px; margin-bottom:10px;">{booking['name']}</div>'''
+                if booking['name'] else ''}
+              {f'''<div style="font-size:11px; color:#666; text-transform:uppercase;
+                              letter-spacing:0.5px; margin-bottom:4px;">Phone</div>
+                   <div style="font-size:14px;"><a href="tel:{booking['phone']}"
+                       style="color:#1e3a8a; text-decoration:none;">{booking['phone']}</a></div>'''
+                if booking['phone'] else ''}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         col_a, col_b = st.columns(2)
         if col_a.button("🗑️ Cancel booking", type="primary", use_container_width=True):
             save_booking(d_idx, hour, None)
             st.session_state["last_msg"] = (
-                f"🗑️ Cancelled **{booking}** ({DAYS[d_idx]} {hour:02d}:00)"
+                f"🗑️ Cancelled **{booking['company']}** ({DAYS[d_idx]} {hour:02d}:00)"
             )
             st.rerun()
         if col_b.button("Keep it", use_container_width=True):
             st.rerun()
     else:
-        # Free → ask for company name
+        # Free → ask for company + full name + phone
         st.success("This slot is free — book it below:")
         with st.form("book_form", clear_on_submit=False):
             company = st.text_input(
                 "Company name",
                 placeholder="e.g. Acme Corp",
                 key=f"company_{d_idx}_{hour}",
+            )
+            full_name = st.text_input(
+                "Full name",
+                placeholder="e.g. John Smith",
+                key=f"name_{d_idx}_{hour}",
+            )
+            phone = st.text_input(
+                "Phone number",
+                placeholder="e.g. +971 50 123 4567",
+                key=f"phone_{d_idx}_{hour}",
             )
             col_a, col_b = st.columns(2)
             confirm = col_a.form_submit_button(
@@ -332,7 +383,10 @@ def slot_dialog(d_idx: int, hour: int):
                 if not company.strip():
                     st.error("Please enter a company name.")
                 else:
-                    save_booking(d_idx, hour, company.strip())
+                    save_booking(
+                        d_idx, hour, company.strip(),
+                        name=full_name.strip(), phone=phone.strip(),
+                    )
                     st.session_state["last_msg"] = (
                         f"✅ Booked **{DAYS[d_idx]} {hour:02d}:00** for **{company.strip()}**"
                     )
@@ -388,20 +442,29 @@ for h in HOURS:
     row = st.columns([1] + [2] * len(DAYS))
     row[0].markdown(f'<div class="miite-time">{h:02d}:00</div>', unsafe_allow_html=True)
     for d_idx in range(len(DAYS)):
-        company = bookings.get((d_idx, h))
-        if company:
-            # Cell is narrow on mobile — keep label short, full name shows in popup
+        booking = bookings.get((d_idx, h))
+        if booking:
+            company = booking["company"]
+            # Cell is narrow on mobile — keep label short, full info shows in popup
             label = company if len(company) <= 6 else company[:5] + "…"
             btype = "primary"  # booked
+            # Tooltip on hover shows full company (and name/phone if present)
+            tooltip_bits = [company]
+            if booking.get("name"):
+                tooltip_bits.append(booking["name"])
+            if booking.get("phone"):
+                tooltip_bits.append(booking["phone"])
+            help_text = " · ".join(tooltip_bits)
         else:
             label = "·"
             btype = "secondary"  # free
+            help_text = "Free — tap to book"
         if row[d_idx + 1].button(
             label,
             key=f"slot_{d_idx}_{h}",
             type=btype,
             use_container_width=True,
-            help=company if company else "Free — tap to book",
+            help=help_text,
         ):
             slot_dialog(d_idx, h)
 
